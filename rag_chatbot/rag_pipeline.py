@@ -1,86 +1,62 @@
-import os
 import faiss
+import pickle
+import os
+from openai import OpenAI
+from openai import OpenAIError
 import numpy as np
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
-import openai
 
-# Load environment variables
+# Load API key from environment
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Load embedding model
-try:
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-except Exception as e:
-    raise RuntimeError("❌ Failed to load SentenceTransformer model: all-MiniLM-L6-v2") from e
+# Load chunked text
+with open("rag_chatbot/chunk_texts.txt", "rb") as f:
+    chunk_texts = pickle.load(f)
 
 # Load FAISS index
-INDEX_PATH = "rag_chatbot/loan_index.faiss"
-try:
-    index = faiss.read_index(INDEX_PATH)
-except Exception as e:
-    raise FileNotFoundError(f"❌ FAISS index not found at: {INDEX_PATH}") from e
-
-# Load chunked documents
-CHUNKS_PATH = "rag_chatbot/chunk_texts.txt"
-try:
-    with open(CHUNKS_PATH, "r", encoding="utf-8") as file:
-        chunks = [line.strip() for line in file.readlines()]
-except Exception as e:
-    raise FileNotFoundError(f"❌ Could not load chunked texts from: {CHUNKS_PATH}") from e
+index = faiss.read_index("rag_chatbot/loan_index.faiss")
 
 
-def retrieve_docs(query: str, top_k: int = 3) -> list[str]:
-    """
-    Encode the query and retrieve top_k most similar chunks from FAISS index.
-
-    Args:
-        query (str): User query.
-        top_k (int): Number of top documents to retrieve.
-
-    Returns:
-        List[str]: Top matching document chunks.
-    """
+def get_embedding(text):
+    """Generate embedding for the input text using OpenAI"""
     try:
-        query_vector = model.encode([query])
-        _, indices = index.search(np.array(query_vector), top_k)
-        return [chunks[i] for i in indices[0]]
-    except Exception as e:
-        print(f"❌ Error retrieving documents: {e}")
-        return ["Error retrieving documents."]
+        response = client.embeddings.create(
+            input=[text],
+            model="text-embedding-ada-002"
+        )
+        return np.array(response.data[0].embedding, dtype="float32")
+    except OpenAIError as e:
+        return None
 
 
-def generate_answer(query: str) -> str:
-    """
-    Generate an answer from OpenAI using context from retrieved chunks.
+def get_answer(query, k=3):
+    """Retrieve top-k chunks and generate answer using OpenAI Chat API"""
+    query_embedding = get_embedding(query)
+    if query_embedding is None:
+        return "❌ Failed to generate embedding. Check your API key or internet connection."
 
-    Args:
-        query (str): User query.
+    # Search similar vectors
+    _, indices = index.search(np.array([query_embedding]), k)
 
-    Returns:
-        str: Generated answer from OpenAI.
-    """
-    context_chunks = retrieve_docs(query)
-    context = "\n\n".join(context_chunks)
+    # Retrieve top-k chunks
+    context = "\n\n".join([chunk_texts[i] for i in indices[0]])
 
-    prompt = f"""
-You are an AI assistant helping with loan dataset analysis.
-Use the following context to answer the question precisely and helpfully.
-Do not guess if the answer is not in the context.
+    # Prompt for Chat Completion
+    prompt = f"""You are a helpful assistant. Use the following information to answer the question.
 
 Context:
 {context}
 
 Question: {query}
-Answer:
-""".strip()
+Answer:"""
 
     try:
-        response = openai.ChatCompletion.create(
+        completion = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
         )
-        return response['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        return f"❌ OpenAI API error: {str(e)}"
+        return completion.choices[0].message.content.strip()
+    except OpenAIError as e:
+        return f"❌ Error while getting answer: {str(e)}"
