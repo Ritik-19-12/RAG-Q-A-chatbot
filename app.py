@@ -1,63 +1,66 @@
 import streamlit as st
-from rag_chatbot.rag_pipeline import generate_answer, get_context_chunks
+from rag_chatbot.rag_pipeline import generate_answer, retrieve_docs
 
-# Streamlit Page Config
-st.set_page_config(page_title="Loan Approval Q&A", page_icon="📊", layout="wide")
+# Page config
+st.set_page_config(page_title="Loan Approval RAG Chatbot", layout="wide")
 
-# Custom CSS for better visibility
+# Custom CSS for styling
 st.markdown("""
     <style>
-    body {
-        background-color: #f0f2f6;
-    }
-    .stTextInput input {
-        padding: 0.75rem;
-        border-radius: 8px;
-    }
-    .stButton button {
-        background-color: #4CAF50;
-        color: white;
-        border-radius: 8px;
-        padding: 0.5rem 1rem;
-    }
-    .big-font {
-        font-size: 26px !important;
-        font-weight: bold;
-    }
+        body {
+            background-color: #f0f2f6;
+        }
+        .reportview-container .main .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            padding-left: 3rem;
+            padding-right: 3rem;
+        }
+        .stTextInput > div > div > input {
+            color: white !important;
+        }
+        .stMarkdown h3 {
+            color: #1f4e79;
+        }
+        .stMarkdown h1 {
+            color: #124076;
+        }
     </style>
 """, unsafe_allow_html=True)
 
-# Sidebar instructions
-st.sidebar.title("📘 Instructions")
-st.sidebar.markdown("""
-- This is a Q&A chatbot for the **Loan Approval Dataset**.
-- Ask natural language questions like:
-    - ✅ *What factors affect loan approval?*
-    - ✅ *How many applicants were denied?*
-    - ✅ *What's the average income of approved applicants?*
-- It uses **RAG (Retrieval-Augmented Generation)** to pull answers from data chunks.
+# Title
+st.title("🤖 Loan Approval RAG Q&A Chatbot")
+st.markdown("Ask any question about the loan dataset, and get a smart answer!")
 
-🧠 Powered by Sentence Transformers + FAISS + OpenAI GPT.
-""")
+# Sidebar
+with st.sidebar:
+    st.header("📚 Instructions")
+    st.markdown("""
+    - This chatbot answers questions using a **Loan Approval dataset**.
+    - It retrieves the most relevant document chunks using **FAISS** and sends the context to **OpenAI GPT-3.5** for answering.
 
-# Main title
-st.markdown("<p class='big-font'>📊 Loan Approval RAG Chatbot</p>", unsafe_allow_html=True)
+    ### 💡 Example Questions
+    - What is the average loan amount?
+    - How many loans were approved?
+    - Which employment type has the most loans?
 
-# User input
-query = st.text_input("🔎 Ask your question:")
+    """)
 
-if st.button("Get Answer"):
-    if query.strip():
-        with st.spinner("🧠 Thinking..."):
+# Input
+query = st.text_input("🔎 Enter your question here:")
+
+# Button to submit
+if st.button("Submit Question"):
+    if query:
+        with st.spinner("🔍 Thinking..."):
             answer = generate_answer(query)
-            context_chunks = get_context_chunks(query)  # Optional: show matched chunks
+            matched_chunks = retrieve_docs(query)
 
-        st.success("✅ Answer:")
-        st.markdown(f"**{answer}**")
+        st.markdown("### ✅ Answer:")
+        st.success(answer)
 
-        # Show context
-        with st.expander("📄 Show matched context chunks"):
-            for idx, chunk in enumerate(context_chunks):
-                st.markdown(f"**Chunk {idx+1}:**\n```\n{chunk}\n```")
+        st.markdown("### 📄 Matched Context Chunks:")
+        for i, chunk in enumerate(matched_chunks, 1):
+            st.markdown(f"**Chunk {i}:** {chunk}")
     else:
-        st.warning("Please enter a question.")
+        st.warning("Please enter a question before submitting.")
