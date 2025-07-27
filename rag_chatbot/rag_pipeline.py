@@ -2,62 +2,71 @@ import faiss
 import pickle
 import os
 import numpy as np
-from openai import OpenAI, OpenAIError
 from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
 
-# ✅ Load API key from environment
+# ✅ Load environment variables (if needed)
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ✅ Load chunked text (Pickle format)
-chunks_path = os.path.join(os.path.dirname(__file__), "rag_chunks.pkl")
+# ✅ Paths
+base_path = os.path.dirname(__file__)
+faiss_index_path = os.path.join(base_path, "loan_index.faiss")
+chunks_path = os.path.join(base_path, "rag_chunks.pkl")
+
+# ✅ Load FAISS index and chunks
+index = faiss.read_index(faiss_index_path)
 with open(chunks_path, "rb") as f:
     chunk_texts = pickle.load(f)
 
-# ✅ Load FAISS index
-index_path = os.path.join(os.path.dirname(__file__), "loan_index.faiss")
-index = faiss.read_index(index_path)
+# ✅ Load lightweight embedding model
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
+# ✅ Load lightweight Hugging Face model (FLAN-T5-small)
+try:
+    tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
+    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small")
+    llm_pipeline = pipeline("text2text-generation", model=model, tokenizer=tokenizer)
+except Exception as e:
+    print(f"⚠️ Failed to load model: {e}")
+    llm_pipeline = None
 
+# ✅ Embedding function
 def get_embedding(text):
-    """Generate embedding for the input text using OpenAI"""
     try:
-        response = client.embeddings.create(
-            input=[text],
-            model="text-embedding-ada-002"
-        )
-        return np.array(response.data[0].embedding, dtype="float32")
-    except OpenAIError as e:
+        embedding = embedder.encode([text])[0]
+        return np.array(embedding, dtype=np.float32)
+    except Exception as e:
+        print(f"❌ Embedding Error: {e}")
         return None
 
+# ✅ Retrieve top-k chunks
+def retrieve_docs(query, k=3):
+    embedding = get_embedding(query)
+    if embedding is None:
+        return [], "❌ Could not compute embedding."
+    distances, indices = index.search(np.array([embedding]), k)
+    return [chunk_texts[i] for i in indices[0]], None
 
-def get_answer(query, k=3):
-    """Retrieve top-k chunks and generate answer using OpenAI Chat API"""
-    query_embedding = get_embedding(query)
-    if query_embedding is None:
-        return "❌ Failed to generate embedding. Check your API key or internet connection."
+# ✅ Generate Answer
+def generate_answer(query, k=3):
+    chunks, error = retrieve_docs(query, k)
+    if error:
+        return error
 
-    # Search similar vectors
-    _, indices = index.search(np.array([query_embedding]), k)
+    context = "\n".join(chunks)
+    prompt = f"Answer the question based on the context.\nContext:\n{context}\n\nQuestion: {query}\nAnswer:"
 
-    # Retrieve top-k chunks
-    context = "\n\n".join([chunk_texts[i] for i in indices[0]])
+    if llm_pipeline:
+        try:
+            response = llm_pipeline(prompt, max_new_tokens=100)[0]['generated_text']
+            return response.strip()
+        except Exception as e:
+            return f"❌ Generation Error: {e}"
+    else:
+        return f"🤖 Context:\n{context}\n\n📌 No model loaded. Please install or connect an LLM."
 
-    # Prompt for Chat Completion
-    prompt = f"""You are a helpful assistant. Use the following information to answer the question.
-
-Context:
-{context}
-
-Question: {query}
-Answer:"""
-
-    try:
-        completion = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        return completion.choices[0].message.content.strip()
-    except OpenAIError as e:
-        return f"❌ Error while getting answer: {str(e)}"
+# ✅ Example use
+if __name__ == "__main__":
+    query = "What is the eligibility for the gold loan?"
+    print(generate_answer(query))
